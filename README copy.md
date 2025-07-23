@@ -1,1 +1,0 @@
-# home_garden_sdxl_canny_runpod

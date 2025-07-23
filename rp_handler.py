@@ -75,7 +75,7 @@ def normalize_control_items(raw) -> List[str]:
 
     if isinstance(raw, str):
         # разделяем по запятым или переносам
-        parts = [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]
+        parts = [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()] ## noqa
         return parts or DEFAULT_CONTROL_ITEMS[:]
 
     if isinstance(raw, (list, tuple)):
@@ -183,7 +183,7 @@ def segment_image(image):
         image_processor (AutoImageProcessor): The processor to prepare the
             image for segmentation.
         image_segmentor (SegformerForSemanticSegmentation): The semantic
-            segmentation model used to identify different segments in the image.
+            segmentation model used to identify different segments in image.
 
     Returns:
         Image: The segmented image with each segment colored differently based
@@ -215,6 +215,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         image_url = payload.get("image_url")
         if not image_url:
             return {"error": "'image_url' is required"}
+
+        mask_url = payload.get("mask_url")
 
         prompt = payload.get("prompt")
         if not prompt:
@@ -264,36 +266,41 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         orig_w, orig_h = image_pil.size
         work_w, work_h = compute_work_resolution(orig_w, orig_h, TARGET_RES)
 
-        # resize *both* the init image and the control image to the same, /8-aligned size
+        # resize *both* init image and  control image to same, /8-aligned size
         image_pil = image_pil.resize((work_w, work_h),
                                      Image.Resampling.LANCZOS)
         depth_cond = control_image.resize((work_w, work_h),
                                           Image.Resampling.LANCZOS)
+        if not mask_url:
+            real_seg = np.array(
+                segment_image(image_pil)
+            )
+            unique_colors = np.unique(real_seg.reshape(-1, real_seg.shape[2]),
+                                      axis=0)
+            unique_colors = [tuple(color) for color in unique_colors]
+            segment_items = [map_colors_rgb(i) for i in unique_colors]
 
-        real_seg = np.array(
-            segment_image(image_pil)
-        )
-        unique_colors = np.unique(real_seg.reshape(-1, real_seg.shape[2]),
-                                  axis=0)
-        unique_colors = [tuple(color) for color in unique_colors]
-        segment_items = [map_colors_rgb(i) for i in unique_colors]
+            chosen_colors, segment_items = filter_items(
+                colors_list=unique_colors,
+                items_list=segment_items,
+                items_to_remove=control_items,
+            )
 
-        chosen_colors, segment_items = filter_items(
-            colors_list=unique_colors,
-            items_list=segment_items,
-            items_to_remove=control_items,
-        )
+            logger.log(f"SEGMENTED ITEMS {segment_items}")
 
-        logger.log(f"SEGMENTED ITEMS {segment_items}")
-
-        mask = np.zeros_like(real_seg)
-        for color in chosen_colors:
-            color_matches = (real_seg == color).all(axis=2)
-            mask[color_matches] = 1
-        mask_image = Image.fromarray(
-            (mask * 255).astype(np.uint8)).convert("RGB")
-        mask_image = mask_image.filter(
-            ImageFilter.GaussianBlur(radius=mask_blur_radius))
+            # Установим маску
+            mask = np.zeros_like(real_seg)
+            for color in chosen_colors:
+                color_matches = (real_seg == color).all(axis=2)
+                mask[color_matches] = 1
+            mask_image = Image.fromarray(
+                (mask * 255).astype(np.uint8)).convert("RGB")
+            mask_image = mask_image.filter(
+                ImageFilter.GaussianBlur(radius=mask_blur_radius))
+        else:
+            mask_image = url_to_pil(mask_url)
+            mask_image = mask_image.resize((work_w, work_h),
+                                           Image.Resampling.LANCZOS)
 
         # ------------------ генерация ---------------- #
         images = PIPELINE(
@@ -321,20 +328,22 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             ).images[0]
             final.append(ref)
 
-        mask_vis = mask_image.resize((orig_w, orig_h),
-                                     resample=Image.Resampling.NEAREST).convert("RGB")
-        final.append(mask_vis)
+        # mask_vis = mask_image.resize(
+        #     (orig_w, orig_h),
+        #     resample=Image.Resampling.NEAREST).convert("RGB")
+        # final.append(mask_vis)
         torch.cuda.empty_cache()
 
         return {
             "images_base64": [pil_to_b64(i) for i in final],
-            "time": round(time.time() - job["created"], 2) if "created" in job else None,
+            "time": round(time.time() - job["created"],
+                          2) if "created" in job else None,
             "steps": steps, "seed": seed
         }
 
     except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
         if "CUDA out of memory" in str(exc):
-            return {"error": "CUDA OOM — уменьшите 'steps' или размер изображения."}
+            return {"error": "CUDA OOM — уменьшите 'steps' или размер изображения."} # noqa
         return {"error": str(exc)}
     except Exception as exc:
         import traceback
