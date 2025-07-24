@@ -1,3 +1,4 @@
+import gc
 import os
 import torch
 
@@ -22,7 +23,18 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
 
 LORA_NAMES = [
-    
+    # "ArtDeco_XL.safetensors",
+    # "Authoritarian_XL.safetensors",
+    # "Bathroom_XL.safetensors",
+    # "FictionInterior_XL.safetensors",
+    # "FuturismStyle_Interior_XL.safetensors",
+    # "JapaneseInterior_XL.safetensors",
+    # "KidsRoom_XL.safetensors",
+    # "LivingRoom_XL.safetensors",
+    # "LuxuryBedroomXL.safetensors",
+    # "ModernStyle_XL.safetensors",
+    # "NordicStyle_XL.safetensors",
+    # "PublicSpace_XL.safetensors"
 ]
 
 
@@ -32,16 +44,14 @@ def fetch_checkpoints() -> None:
     hf_hub_download(
         repo_id="sintecs/interior",
         filename="interiorSceneXL_v1.safetensors",
-        local_dir="checkpoints",
-        local_dir_use_symlinks=False,
+        local_dir="checkpoints"
     )
 
     for fname in LORA_NAMES:
         hf_hub_download(
             repo_id="sintecs/interior",
             filename=fname,
-            local_dir="loras",
-            local_dir_use_symlinks=False,
+            local_dir="loras"
         )
 
 
@@ -81,6 +91,12 @@ def get_pipeline():
     print("LOADED PIPELINE")
     PIPELINE.scheduler = UniPCMultistepScheduler.from_config(
         PIPELINE.scheduler.config)
+
+    PIPELINE.enable_model_cpu_offload
+
+    del PIPELINE
+
+    gc.collect()
 
     StableDiffusionXLImg2ImgPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-refiner-1.0",
