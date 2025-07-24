@@ -37,6 +37,23 @@ DEFAULT_CONTROL_ITEMS = [
     "door;double;door",
 ]
 
+LORA_DIR = "./loras"
+
+LORA_LIST = [
+    "ArtDeco_XL.safetensors",
+    "Authoritarian_XL.safetensors",
+    "Bathroom_XL.safetensors",
+    "FictionInterior_XL.safetensors",
+    "FuturismStyle_Interior_XL.safetensors",
+    "JapaneseInterior_XL.safetensors",
+    "KidsRoom_XL.safetensors",
+    "LivingRoom_XL.safetensors",
+    "LuxuryBedroomXL.safetensors",
+    "ModernStyle_XL.safetensors",
+    "NordicStyle_XL.safetensors",
+    "PublicSpace_XL.safetensors"
+]
+
 
 # ------------------------- ФУНКЦИИ-ПОМОЩНИКИ ----------------------------- #
 def url_to_pil(url: str) -> Image.Image:
@@ -182,6 +199,8 @@ image_segmentor = SegformerForSemanticSegmentation.from_pretrained(
     "nvidia/segformer-b5-finetuned-ade-640-640"
 )
 
+CURRENT_LORA: str = "None"
+
 
 @torch.inference_mode()
 @torch.autocast(DEVICE)
@@ -217,6 +236,48 @@ def segment_image(image):
     seg_image = Image.fromarray(color_seg).convert("RGB")
 
     return seg_image
+
+
+# --------------------------------------------------------------------------- #
+#                           LOADING / UNLOADING LoRA                          #
+# --------------------------------------------------------------------------- #
+def _switch_lora(lora_name: Optional[str],
+                 lora_scale: float) -> Optional[str]:
+    """Load new LoRA or unload if lora_name is None. Return error str or None."""
+    global CURRENT_LORA
+
+    # -------- unload current LoRA -------- #
+    if lora_name is None and CURRENT_LORA != "None":
+        if hasattr(PIPELINE, "unfuse_lora"):
+            PIPELINE.unfuse_lora()
+        if hasattr(PIPELINE, "unload_lora_weights"):
+            PIPELINE.unload_lora_weights()
+        CURRENT_LORA = "None"
+        return None
+
+    # ----- nothing to do / unsupported --- #
+    if lora_name is None or lora_name == CURRENT_LORA:
+        return None
+    if lora_name not in LORA_LIST:
+        return f"Unknown LoRA '{lora_name}'."
+
+    # --------- load new LoRA ------------- #
+    try:
+        if CURRENT_LORA != "None":
+            if hasattr(PIPELINE, "unfuse_lora"):
+                PIPELINE.unfuse_lora()
+            if hasattr(PIPELINE, "unload_lora_weights"):
+                PIPELINE.unload_lora_weights()
+
+        PIPELINE.load_lora_weights(f"{LORA_DIR}/{lora_name}",
+                                   use_peft_backend=True)
+        if hasattr(PIPELINE, "fuse_lora"):
+            PIPELINE.fuse_lora(lora_scale=lora_scale)
+
+        CURRENT_LORA = lora_name
+        return None
+    except Exception as err:  # noqa: BLE001
+        return f"Failed to load LoRA '{lora_name}': {err}"
 
 
 # ------------------------- ОСНОВНОЙ HANDLER ------------------------------ #
@@ -265,6 +326,12 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         depth_guidance_end = float(payload.get(
             "controlnet_guidance_end", 1.0))
         # ---------- препроцессинг входа ------------
+
+        #  ----------------- handle LoRA ----------------- #
+        error = _switch_lora(payload.get("lora"),
+                             payload.get("lora_scale", 1.0))
+        if error:
+            return {"error": error}
 
         # mask
         control_items = normalize_control_items(payload.get("control_items"))

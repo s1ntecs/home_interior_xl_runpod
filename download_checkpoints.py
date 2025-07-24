@@ -23,18 +23,18 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
 
 LORA_NAMES = [
-    # "ArtDeco_XL.safetensors",
-    # "Authoritarian_XL.safetensors",
-    # "Bathroom_XL.safetensors",
-    # "FictionInterior_XL.safetensors",
-    # "FuturismStyle_Interior_XL.safetensors",
-    # "JapaneseInterior_XL.safetensors",
-    # "KidsRoom_XL.safetensors",
-    # "LivingRoom_XL.safetensors",
-    # "LuxuryBedroomXL.safetensors",
-    # "ModernStyle_XL.safetensors",
-    # "NordicStyle_XL.safetensors",
-    # "PublicSpace_XL.safetensors"
+    "ArtDeco_XL.safetensors",
+    "Authoritarian_XL.safetensors",
+    "Bathroom_XL.safetensors",
+    "FictionInterior_XL.safetensors",
+    "FuturismStyle_Interior_XL.safetensors",
+    "JapaneseInterior_XL.safetensors",
+    "KidsRoom_XL.safetensors",
+    "LivingRoom_XL.safetensors",
+    "LuxuryBedroomXL.safetensors",
+    "ModernStyle_XL.safetensors",
+    "NordicStyle_XL.safetensors",
+    "PublicSpace_XL.safetensors"
 ]
 
 
@@ -91,7 +91,6 @@ def get_pipeline():
     print("LOADED PIPELINE")
     # PIPELINE.scheduler = UniPCMultistepScheduler.from_config(
     #     PIPELINE.scheduler.config)
-
 
     StableDiffusionXLImg2ImgPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-refiner-1.0",
