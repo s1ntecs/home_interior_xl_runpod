@@ -4,7 +4,7 @@ import torch
 from diffusers import (
     ControlNetModel,
     UniPCMultistepScheduler,
-    StableDiffusionXLControlNetInpaintPipeline,
+    StableDiffusionXLControlNetImg2ImgPipeline,
     AutoencoderKL,
     StableDiffusionXLImg2ImgPipeline
 )
@@ -29,12 +29,12 @@ LORA_NAMES = [
 # ------------------------- загрузка весов -------------------------
 def fetch_checkpoints() -> None:
     """Скачиваем SD-чекпойнт, LoRA-файлы и все внешние зависимости."""
-    hf_hub_download(
-        repo_id="sintecs/interior",
-        filename="interiorSceneXL_v1.safetensors",
-        local_dir="checkpoints",
-        local_dir_use_symlinks=False,
-    )
+    # hf_hub_download(
+    #     repo_id="sintecs/interior",
+    #     filename="interiorSceneXL_v1.safetensors",
+    #     local_dir="checkpoints",
+    #     local_dir_use_symlinks=False,
+    # )
 
     for fname in LORA_NAMES:
         hf_hub_download(
@@ -57,27 +57,19 @@ def get_pipeline():
                                         torch_dtype=torch.float16,
                                         use_safetensors=True)
     print("LOADED VAE")
-    # PIPELINE = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
-    #     # "RunDiffusion/Juggernaut-XL-v9",
-    #     # "SG161222/RealVisXL_V5.0",
-    #     # "misri/cyberrealisticPony_v90Alt1",
-    #     "John6666/epicrealism-xl-vxvii-crystal-clear-realism-sdxl",
-    #     torch_dtype=torch.float16,
-    #     add_watermarker=False,
-    #     controlnet=controlnet,
-    #     vae=vae,
-    #     # variant="fp16",
-    #     use_safetensors=True,
-    #     resume_download=True,
-    # ).to(DEVICE)
-    PIPELINE = StableDiffusionXLControlNetInpaintPipeline.from_single_file(
-        "checkpoints/interiorSceneXL_v1.safetensors",
+    PIPELINE = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
+        # "RunDiffusion/Juggernaut-XL-v9",
+        # "SG161222/RealVisXL_V5.0",
+        # "misri/cyberrealisticPony_v90Alt1",
+        "John6666/epicrealism-xl-vxvii-crystal-clear-realism-sdxl",
         torch_dtype=torch.float16,
         add_watermarker=False,
-        vae=vae,
         controlnet=controlnet,
-    )
-
+        vae=vae,
+        # variant="fp16",
+        use_safetensors=True,
+        resume_download=True,
+    ).to(DEVICE)
     print("LOADED PIPELINE")
     PIPELINE.scheduler = UniPCMultistepScheduler.from_config(
         PIPELINE.scheduler.config)

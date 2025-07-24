@@ -1,12 +1,14 @@
 import cv2
 import base64, io, random, time, numpy as np, torch
-from typing import Any, Dict
-from PIL import Image
+from typing import Any, Dict, Tuple, Union, List, Optional
+from PIL import Image, ImageFilter
 
 from diffusers import (
-    StableDiffusionXLControlNetImg2ImgPipeline,
+    StableDiffusionXLControlNetInpaintPipeline,
     StableDiffusionXLImg2ImgPipeline,
-    ControlNetModel, UniPCMultistepScheduler, DDIMScheduler
+    ControlNetModel, UniPCMultistepScheduler,
+    EulerAncestralDiscreteScheduler,
+    AutoencoderKL, DDIMScheduler
 )
 from transformers import AutoImageProcessor, SegformerForSemanticSegmentation
 
@@ -17,6 +19,7 @@ from runpod.serverless.utils.rp_download import file as rp_file
 from runpod.serverless.modules.rp_logger import RunPodLogger
 
 from colors import ade_palette
+from utils import map_colors_rgb
 
 # --------------------------- КОНСТАНТЫ ----------------------------------- #
 MAX_SEED = np.iinfo(np.int32).max
@@ -26,6 +29,13 @@ MAX_STEPS = 250
 TARGET_RES = 1024  # SDXL рекомендует 1024×1024
 
 logger = RunPodLogger()
+
+
+DEFAULT_CONTROL_ITEMS = [
+    "windowpane;window",
+    "column;pillar",
+    "door;double;door",
+]
 
 
 # ------------------------- ФУНКЦИИ-ПОМОЩНИКИ ----------------------------- #
@@ -55,24 +65,79 @@ def compute_work_resolution(w, h, max_side=1024):
     return max(new_w, 8), max(new_h, 8)
 
 
+def normalize_control_items(raw) -> List[str]:
+    """
+    Приводит control_items к списку строк.
+    Поддерживает: None, строку с запятыми/новыми строками, список.
+    """
+    if raw is None:
+        return DEFAULT_CONTROL_ITEMS[:]
+
+    if isinstance(raw, str):
+        # разделяем по запятым или переносам
+        parts = [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()] ## noqa
+        return parts or DEFAULT_CONTROL_ITEMS[:]
+
+    if isinstance(raw, (list, tuple)):
+        cleaned = [str(x).strip() for x in raw if str(x).strip()]
+        return cleaned or DEFAULT_CONTROL_ITEMS[:]
+
+    # на всякий случай
+    return DEFAULT_CONTROL_ITEMS[:]
+
+
+def filter_items(
+    colors_list: Union[List, np.ndarray],
+    items_list: Union[List, np.ndarray],
+    items_to_remove: Union[List, np.ndarray],
+) -> Tuple[Union[List, np.ndarray], Union[List, np.ndarray]]:
+    """
+    Filters items and their corresponding colors from given lists, excluding
+    specified items.
+
+    Args:
+        colors_list: A list or numpy array of colors corresponding to items.
+        items_list: A list or numpy array of items.
+        items_to_remove: A list or numpy array of items to be removed.
+
+    Returns:
+        A tuple of two lists or numpy arrays: filtered colors and filtered
+        items.
+    """
+    filtered_colors = []
+    filtered_items = []
+    for color, item in zip(colors_list, items_list):
+        if item not in items_to_remove:
+            filtered_colors.append(color)
+            filtered_items.append(item)
+
+    return filtered_colors, filtered_items
+
+
 # ------------------------- ЗАГРУЗКА МОДЕЛЕЙ ------------------------------ #
-cn_depth = ControlNetModel.from_pretrained(
+controlnet = ControlNetModel.from_pretrained(
     "diffusers/controlnet-depth-sdxl-1.0",
     torch_dtype=DTYPE,
     use_safetensors=True
 )
 
-# cn_seg = ControlNetModel.from_pretrained(
-#     "SargeZT/sdxl-controlnet-seg",
-#     torch_dtype=DTYPE)
+eulera_scheduler = EulerAncestralDiscreteScheduler.from_pretrained(
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    subfolder="scheduler"
+)
+
+vae = AutoencoderKL.from_pretrained(
+    "madebyollin/sdxl-vae-fp16-fix",
+    torch_dtype=torch.float16
+)
 
 
-PIPELINE = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
+PIPELINE = StableDiffusionXLControlNetInpaintPipeline.from_pretrained(
     # "RunDiffusion/Juggernaut-XL-v9",
     # "SG161222/RealVisXL_V5.0",
     "John6666/epicrealism-xl-vxvii-crystal-clear-realism-sdxl",
     # controlnet=[cn_depth, cn_seg],
-    controlnet=cn_depth,
+    controlnet=controlnet,
     torch_dtype=DTYPE,
     # variant="fp16" if DTYPE == torch.float16 else None,
     safety_checker=None,
@@ -80,6 +145,8 @@ PIPELINE = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
     add_watermarker=False,
     use_safetensors=True,
     resume_download=True,
+    scheduler=eulera_scheduler,
+    vae=vae,
 )
 PIPELINE.scheduler = UniPCMultistepScheduler.from_config(
     PIPELINE.scheduler.config)
@@ -95,10 +162,7 @@ REFINER = StableDiffusionXLImg2ImgPipeline.from_pretrained(
 REFINER.scheduler = DDIMScheduler.from_config(REFINER.scheduler.config)
 REFINER.to(DEVICE)
 
-CURRENT_LORA = "None"
-
 midas = MidasDetector.from_pretrained("lllyasviel/ControlNet")
-# line_det = LineartDetector.from_pretrained("lllyasviel/Annotators")
 
 seg_image_processor = AutoImageProcessor.from_pretrained(
     "nvidia/segformer-b5-finetuned-ade-640-640"
@@ -119,7 +183,7 @@ def segment_image(image):
         image_processor (AutoImageProcessor): The processor to prepare the
             image for segmentation.
         image_segmentor (SegformerForSemanticSegmentation): The semantic
-            segmentation model used to identify different segments in the img.
+            segmentation model used to identify different segments in image.
 
     Returns:
         Image: The segmented image with each segment colored differently based
@@ -144,30 +208,6 @@ def segment_image(image):
     return seg_image
 
 
-def resize_dimensions(dimensions, target_size):
-    """
-    Resize PIL to target size while maintaining aspect ratio
-    If smaller than target size leave it as is
-    """
-    width, height = dimensions
-
-    # Check if both dimensions are smaller than the target size
-    if width < target_size and height < target_size:
-        return dimensions
-
-    # Determine the larger side
-    if width > height:
-        # Calculate the aspect ratio
-        aspect_ratio = height / width
-        # Resize dimensions
-        return (target_size, int(target_size * aspect_ratio))
-    else:
-        # Calculate the aspect ratio
-        aspect_ratio = width / height
-        # Resize dimensions
-        return (int(target_size * aspect_ratio), target_size)
-
-
 # ------------------------- ОСНОВНОЙ HANDLER ------------------------------ #
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -176,6 +216,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         if not image_url:
             return {"error": "'image_url' is required"}
 
+        mask_url = payload.get("mask_url")
+
         prompt = payload.get("prompt")
         if not prompt:
             return {"error": "'prompt' is required"}
@@ -183,7 +225,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         negative_prompt = payload.get(
             "negative_prompt", "")
         img_strength = payload.get(
-            "img_strength", 4.0)
+            "img_strength", 0.5)
         guidance_scale = float(payload.get(
             "guidance_scale", 7.5))
         steps = min(int(payload.get(
@@ -206,33 +248,74 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # control scales
         depth_scale = float(payload.get(
-            "depth_conditioning_scale", 0.9))
+            "controlnet_conditioning_scale", 0.8))
+        depth_guidance_start = float(payload.get(
+            "controlnet_guidance_start", 0.0))
+        depth_guidance_end = float(payload.get(
+            "controlnet_guidance_end", 1.0))
         # ---------- препроцессинг входа ------------
+
+        # mask
+        control_items = normalize_control_items(payload.get("control_items"))
+        mask_blur_radius = float(payload.get("mask_blur_radius", 3))
 
         image_pil = url_to_pil(image_url)
 
-        # ---- depth --------------------------------------------------------------
-        depth_cond = midas(image_pil)
+        control_image = midas(image_pil)
 
         orig_w, orig_h = image_pil.size
-        work_w, work_h = compute_work_resolution(orig_w, orig_h, TARGET_RES)  # already in your code
+        work_w, work_h = compute_work_resolution(orig_w, orig_h, TARGET_RES)
 
-        # resize *both* the init image and the control image to the same, /8-aligned size
-        image_pil = image_pil.resize((work_w, work_h), Image.Resampling.LANCZOS)
-        depth_cond = depth_cond.resize((work_w, work_h), Image.Resampling.LANCZOS)
+        # resize *both* init image and  control image to same, /8-aligned size
+        image_pil = image_pil.resize((work_w, work_h),
+                                     Image.Resampling.LANCZOS)
+        depth_cond = control_image.resize((work_w, work_h),
+                                          Image.Resampling.LANCZOS)
+        if not mask_url:
+            real_seg = np.array(
+                segment_image(image_pil)
+            )
+            unique_colors = np.unique(real_seg.reshape(-1, real_seg.shape[2]),
+                                      axis=0)
+            unique_colors = [tuple(color) for color in unique_colors]
+            segment_items = [map_colors_rgb(i) for i in unique_colors]
+
+            chosen_colors, segment_items = filter_items(
+                colors_list=unique_colors,
+                items_list=segment_items,
+                items_to_remove=control_items,
+            )
+
+            logger.log(f"SEGMENTED ITEMS {segment_items}")
+
+            # Установим маску
+            mask = np.zeros_like(real_seg)
+            for color in chosen_colors:
+                color_matches = (real_seg == color).all(axis=2)
+                mask[color_matches] = 1
+            mask_image = Image.fromarray(
+                (mask * 255).astype(np.uint8)).convert("RGB")
+            mask_image = mask_image.filter(
+                ImageFilter.GaussianBlur(radius=mask_blur_radius))
+        else:
+            mask_image = url_to_pil(mask_url)
+            mask_image = mask_image.resize((work_w, work_h),
+                                           Image.Resampling.LANCZOS)
+
         # ------------------ генерация ---------------- #
         images = PIPELINE(
             prompt=prompt,
             negative_prompt=negative_prompt,
-            # image=[depth_cond, seg_pil],
-            # control_image=[depth_cond, seg_pil],
             image=image_pil,
             control_image=depth_cond,
             controlnet_conditioning_scale=depth_scale,
+            control_guidance_start=depth_guidance_start,
+            control_guidance_end=depth_guidance_end,
             num_inference_steps=steps,
             guidance_scale=guidance_scale,
             generator=generator,
             strength=img_strength,
+            mask_image=mask_image
         ).images
 
         final = []
@@ -244,18 +327,23 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 num_inference_steps=refiner_steps, guidance_scale=refiner_scale
             ).images[0]
             final.append(ref)
+
+        # mask_vis = mask_image.resize(
+        #     (orig_w, orig_h),
+        #     resample=Image.Resampling.NEAREST).convert("RGB")
+        # final.append(mask_vis)
         torch.cuda.empty_cache()
 
         return {
             "images_base64": [pil_to_b64(i) for i in final],
-            "time": round(time.time() - job["created"], 2) if "created" in job else None,
-            "steps": steps, "seed": seed,
-            "lora": CURRENT_LORA if CURRENT_LORA != "None" else None,
+            "time": round(time.time() - job["created"],
+                          2) if "created" in job else None,
+            "steps": steps, "seed": seed
         }
 
     except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
         if "CUDA out of memory" in str(exc):
-            return {"error": "CUDA OOM — уменьшите 'steps' или размер изображения."}
+            return {"error": "CUDA OOM — уменьшите 'steps' или размер изображения."} # noqa
         return {"error": str(exc)}
     except Exception as exc:
         import traceback

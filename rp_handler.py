@@ -132,24 +132,35 @@ vae = AutoencoderKL.from_pretrained(
 )
 
 
-PIPELINE = StableDiffusionXLControlNetInpaintPipeline.from_pretrained(
-    # "RunDiffusion/Juggernaut-XL-v9",
-    # "SG161222/RealVisXL_V5.0",
-    "John6666/epicrealism-xl-vxvii-crystal-clear-realism-sdxl",
-    # controlnet=[cn_depth, cn_seg],
-    controlnet=controlnet,
-    torch_dtype=DTYPE,
-    # variant="fp16" if DTYPE == torch.float16 else None,
-    safety_checker=None,
-    requires_safety_checker=False,
+# PIPELINE = StableDiffusionXLControlNetInpaintPipeline.from_pretrained(
+#     # "RunDiffusion/Juggernaut-XL-v9",
+#     # "SG161222/RealVisXL_V5.0",
+#     "John6666/epicrealism-xl-vxvii-crystal-clear-realism-sdxl",
+#     # controlnet=[cn_depth, cn_seg],
+#     controlnet=controlnet,
+#     torch_dtype=DTYPE,
+#     # variant="fp16" if DTYPE == torch.float16 else None,
+#     safety_checker=None,
+#     requires_safety_checker=False,
+#     add_watermarker=False,
+#     use_safetensors=True,
+#     resume_download=True,
+#     scheduler=eulera_scheduler,
+#     vae=vae,
+# )
+
+PIPELINE = StableDiffusionXLControlNetInpaintPipeline.from_single_file(
+    "checkpoints/interiorSceneXL_v1.safetensors",
+    torch_dtype=torch.float16,
     add_watermarker=False,
-    use_safetensors=True,
-    resume_download=True,
-    scheduler=eulera_scheduler,
     vae=vae,
+    controlnet=controlnet,
+    scheduler=eulera_scheduler
 )
-PIPELINE.scheduler = UniPCMultistepScheduler.from_config(
-    PIPELINE.scheduler.config)
+
+# PIPELINE.scheduler = UniPCMultistepScheduler.from_config(
+#     PIPELINE.scheduler.config)
+
 PIPELINE.enable_xformers_memory_efficient_attention()
 PIPELINE.to(DEVICE)
 
@@ -248,11 +259,11 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # control scales
         depth_scale = float(payload.get(
-            "depth_conditioning_scale", 0.8))
+            "controlnet_conditioning_scale", 0.8))
         depth_guidance_start = float(payload.get(
-            "depth_guidance_start", 0.0))
+            "controlnet_guidance_start", 0.0))
         depth_guidance_end = float(payload.get(
-            "depth_guidance_end", 1.0))
+            "controlnet_guidance_end", 1.0))
         # ---------- препроцессинг входа ------------
 
         # mask
