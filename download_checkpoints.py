@@ -80,23 +80,18 @@ def get_pipeline():
     #     use_safetensors=True,
     #     resume_download=True,
     # ).to(DEVICE)
-    PIPELINE = StableDiffusionXLControlNetInpaintPipeline.from_single_file(
-        "checkpoints/interiorSceneXL_v1.safetensors",
-        torch_dtype=torch.float16,
-        add_watermarker=False,
-        vae=vae,
-        controlnet=controlnet,
-    )
+    # PIPELINE = StableDiffusionXLControlNetInpaintPipeline.from_single_file(
+    #     "checkpoints/interiorSceneXL_v1.safetensors",
+    #     torch_dtype=torch.float16,
+    #     add_watermarker=False,
+    #     vae=vae,
+    #     controlnet=controlnet,
+    # )
 
     print("LOADED PIPELINE")
-    PIPELINE.scheduler = UniPCMultistepScheduler.from_config(
-        PIPELINE.scheduler.config)
+    # PIPELINE.scheduler = UniPCMultistepScheduler.from_config(
+    #     PIPELINE.scheduler.config)
 
-    PIPELINE.enable_model_cpu_offload
-
-    del PIPELINE
-
-    gc.collect()
 
     StableDiffusionXLImg2ImgPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-refiner-1.0",
@@ -104,7 +99,7 @@ def get_pipeline():
         variant="fp16",
         safety_checker=None,
     )
-    # print("LOADED REFINER")
+    print("LOADED REFINER")
     MidasDetector.from_pretrained(
         "lllyasviel/ControlNet"
     )
