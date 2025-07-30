@@ -107,9 +107,11 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         image_pil = image_pil.resize((work_w, work_h),
                                      Image.Resampling.LANCZOS)
 
-        mask_image = url_to_pil(mask_url)
+        info = rp_file(mask_url)
+        mask_image = Image.open(info["file_path"]).convert("L")
+
         mask_image = mask_image.resize((work_w, work_h),
-                                       Image.Resampling.LANCZOS)
+                                       Image.Resampling.NEAREST)
 
         # ------------------ генерация ---------------- #
         images = PIPELINE(
@@ -120,9 +122,11 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             guidance_scale=guidance_scale,
             generator=generator,
             strength=img_strength,
-            mask_image=mask_image
+            mask_image=mask_image,
+            width=work_w,
+            height=work_h,
         ).images
-        
+
         return {
             "images_base64": [pil_to_b64(i) for i in images],
             "time": round(time.time() - job["created"],
